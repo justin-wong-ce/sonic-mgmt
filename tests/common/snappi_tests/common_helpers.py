@@ -107,13 +107,27 @@ def get_lossless_buffer_size(host_ans):
     """
     config_facts = host_ans.config_facts(host=host_ans.hostname,
                                          source="running")['ansible_facts']
+
     is_cisco8000_platform = True if 'cisco-8000' in host_ans.facts['platform_asic'] else False
+
+    # Checking if platform is Broadcom-DNX.
+    is_broadcom_dnx = (
+            True
+            if "platform_asic" in host_ans.facts and host_ans.facts["platform_asic"] == "broadcom-dnx"
+            else False
+            )
 
     if "BUFFER_POOL" not in list(config_facts.keys()):
         return None
 
     buffer_pools = config_facts['BUFFER_POOL']
-    profile_name = 'ingress_lossless_pool' if is_cisco8000_platform else 'egress_lossless_pool'
+
+    # Added check to select ingress_lossles_pool for Nokia7250 platform.
+    profile_name = (
+            'ingress_lossless_pool'
+            if (is_cisco8000_platform or is_broadcom_dnx)
+            else 'egress_lossless_pool'
+            )
 
     if profile_name not in list(buffer_pools.keys()):
         return None
@@ -790,10 +804,19 @@ def disable_packet_aging(duthost, asic_value=None):
         duthost.command("docker exec syncd python /packets_aging.py disable")
         duthost.command("docker exec syncd rm -rf /packets_aging.py")
     elif "platform_asic" in duthost.facts and duthost.facts["platform_asic"] == "broadcom-dnx":
-        try:
-            duthost.shell('bcmcmd -n {} "BCMSAI credit-watchdog disable"'.format(asic_value))
-        except Exception:
-            duthost.shell('bcmcmd -n {} "BCMSAI credit-watchdog disable"'.format(asic_value[-1]))
+        # if asic_value is present, disable packet aging for specific asic_value.
+        if (asic_value):
+            try:
+                duthost.shell('bcmcmd -n {} "BCMSAI credit-watchdog disable"'.format(asic_value))
+            except Exception:
+                duthost.shell('bcmcmd -n {} "BCMSAI credit-watchdog disable"'.format(asic_value[-1]))
+        else:
+            # Disabling packet aging for all asics on given DUT.
+            for asic_value in duthost.facts['asics_present']:
+                try:
+                    duthost.shell('bcmcmd -n {} "BCMSAI credit-watchdog disable"'.format(asic_value))
+                except Exception:
+                    duthost.shell('bcmcmd -n {} "BCMSAI credit-watchdog disable"'.format(asic_value[-1]))
 
 
 def enable_packet_aging(duthost, asic_value=None):
@@ -811,10 +834,19 @@ def enable_packet_aging(duthost, asic_value=None):
         duthost.command("docker exec syncd python /packets_aging.py enable")
         duthost.command("docker exec syncd rm -rf /packets_aging.py")
     elif "platform_asic" in duthost.facts and duthost.facts["platform_asic"] == "broadcom-dnx":
-        try:
-            duthost.shell('bcmcmd -n {} "BCMSAI credit-watchdog enable"'.format(asic_value))
-        except Exception:
-            duthost.shell('bcmcmd -n {} "BCMSAI credit-watchdog enable"'.format(asic_value[-1]))
+        # if asic_value is present, enable packet aging for specific asic_value.
+        if (asic_value):
+            try:
+                duthost.shell('bcmcmd -n {} "BCMSAI credit-watchdog enable"'.format(asic_value))
+            except Exception:
+                duthost.shell('bcmcmd -n {} "BCMSAI credit-watchdog enable"'.format(asic_value[-1]))
+        else:
+            # Enabling packet aging for all asics on given DUT.
+            for asic_value in duthost.facts['asics_present']:
+                try:
+                    duthost.shell('bcmcmd -n {} "BCMSAI credit-watchdog enable"'.format(asic_value))
+                except Exception:
+                    duthost.shell('bcmcmd -n {} "BCMSAI credit-watchdog enable"'.format(asic_value[-1]))
 
 
 def get_ipv6_addrs_in_subnet(subnet, number_of_ip):
@@ -1007,3 +1039,25 @@ def calc_pfc_pause_flow_rate(port_speed, oversubscription_ratio=2):
     pps = int(oversubscription_ratio / pause_dur)
 
     return pps
+
+
+def start_pfcwd_fwd(duthost, asic_value=None):
+    """
+    Start PFC watchdog in Forward mode.
+    Stops the PFCWD cleanly before restarting it in FORWARD mode.
+    Args:
+        duthost (AnsibleHost): Device Under Test (DUT)
+        asic_value: asic value of the host
+
+    Returns:
+        N/A
+    """
+
+    # Starting PFCWD in forward mode with detection and restoration duration of 200msec.
+    if asic_value is None:
+        stop_pfcwd(duthost)
+        duthost.shell('sudo pfcwd start --action forward 200 --restoration-time 200')
+    else:
+        stop_pfcwd(duthost, asic_value)
+        duthost.shell('sudo ip netns exec {} pfcwd start --action forward 200 --restoration-time 200'.
+                      format(asic_value))
