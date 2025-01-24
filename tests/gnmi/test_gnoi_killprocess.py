@@ -2,6 +2,7 @@ import pytest
 from .helper import gnoi_request
 from tests.common.helpers.assertions import pytest_assert
 from tests.common.helpers.dut_utils import is_container_running
+from tests.common.utilities import wait_until
 
 
 pytestmark = [
@@ -25,12 +26,19 @@ pytestmark = [
     ("rsyslog", True, ""),
 ])
 def test_gnoi_killprocess_then_restart(duthosts, rand_one_dut_hostname, localhost, process, is_valid, expected_msg,
-                                       tbinfo):
+                                       tbinfo, loganalyzer):
     duthost = duthosts[rand_one_dut_hostname]
     topo_type = tbinfo["topo"]["type"]
 
     if process in ["dhcp_relay"] and topo_type == "t1":
         pytest.skip("Skip test as t1 does not use dhcp_relay service")
+
+    ignoreRegex = [r".*ERR.* pai_get_switch_attribute: :- Error processing switch attribute \d+[\d+]"]
+    ignoreRegex.append(r".*ERR gbsyncd#syncd.*Invalid sai_api_t.*passed#\d+")
+    ignoreRegex.append(r".*ERR gbsyncd#syncd.*Failed to get stats of Port Counter.*")
+    for dut in duthosts.frontend_nodes:
+        if dut.loganalyzer:
+            loganalyzer[dut.hostname].ignore_regex.extend(ignoreRegex)
 
     if process and process != "nonexistent":
         pytest_assert(duthost.is_host_service_running(process),
@@ -54,6 +62,14 @@ def test_gnoi_killprocess_then_restart(duthosts, rand_one_dut_hostname, localhos
         pytest_assert(expected_msg in msg, "Unexpected error message in response to invalid gNOI request")
 
     pytest_assert(duthost.critical_services_fully_started, "System unhealthy after gNOI API request")
+
+    def check_swss_ready():
+        cmd = "systemctl show swss.service --property ActiveState --value"
+        result = duthost.shell(cmd)['stdout']
+        return result == 'active'
+
+    if process == "swss":
+        wait_until(120, 20, 10, check_swss_ready)
 
 
 # This test performs additional verification of the restart request under KillProcess API
